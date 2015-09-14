@@ -153,7 +153,7 @@ define([
       var listNode = prevList || dom.insertAfter(dom.create(listName || 'UL'), last);
 
       // P to LI
-      paras = $.map(paras, function (para) {
+      paras = paras.map(function (para) {
         return dom.isPurePara(para) ? dom.replace(para, 'LI') : para;
       });
 
@@ -187,19 +187,23 @@ define([
         var lastList = headList.childNodes.length > 1 ? dom.splitTree(headList, {
           node: last.parentNode,
           offset: dom.position(last) + 1
-        }, true) : null;
+        }, {
+          isSkipPaddingBlankHTML: true
+        }) : null;
 
         var middleList = dom.splitTree(headList, {
           node: head.parentNode,
           offset: dom.position(head)
-        }, true);
+        }, {
+          isSkipPaddingBlankHTML: true
+        });
 
         paras = isEscapseToBody ? dom.listDescendant(middleList, dom.isLi) :
                                   list.from(middleList.childNodes).filter(dom.isLi);
 
         // LI to P
         if (isEscapseToBody || !dom.isList(headList.parentNode)) {
-          paras = $.map(paras, function (para) {
+          paras = paras.map(function (para) {
             return dom.replace(para, 'P');
           });
         }

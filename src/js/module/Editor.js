@@ -11,14 +11,18 @@ define([
   'summernote/editing/Bullet'
 ], function (agent, func, list, dom, range, async,
              Style, Typing, Table, Bullet) {
+
+  var KEY_BOGUS = 'bogus';
+
   /**
    * @class editing.Editor
    *
    * Editor
    *
    */
-  var Editor = function () {
+  var Editor = function (handler) {
 
+    var self = this;
     var style = new Style();
     var table = new Table();
     var typing = new Typing();
@@ -33,7 +37,7 @@ define([
      * @return {WrappedRange}
      */
     this.createRange = function ($editable) {
-      $editable.focus();
+      this.focus($editable);
       return range.create();
     };
 
@@ -46,7 +50,7 @@ define([
      * @param {Boolean} [thenCollapse=false]
      */
     this.saveRange = function ($editable, thenCollapse) {
-      $editable.focus();
+      this.focus($editable);
       $editable.data('range', range.create());
       if (thenCollapse) {
         range.create().collapse().select();
@@ -80,7 +84,7 @@ define([
       var rng = $editable.data('range');
       if (rng) {
         rng.select();
-        $editable.focus();
+        this.focus($editable);
       }
     };
 
@@ -98,31 +102,46 @@ define([
         $editable[0].appendChild(child[index]);
       }
     };
+
     /**
      * @method currentStyle
      *
      * current style
      *
      * @param {Node} target
-     * @return {Boolean} false if range is no
+     * @return {Object|Boolean} unfocus
      */
     this.currentStyle = function (target) {
       var rng = range.create();
-      return rng ? rng.isOnEditable() && style.current(rng, target) : false;
+      var styleInfo =  rng && rng.isOnEditable() ? style.current(rng.normalize()) : {};
+      if (dom.isImg(target)) {
+        styleInfo.image = target;
+      }
+      return styleInfo;
     };
 
-    var triggerOnBeforeChange = this.triggerOnBeforeChange = function ($editable) {
-      var onBeforeChange = $editable.data('callbacks').onBeforeChange;
-      if (onBeforeChange) {
-        onBeforeChange($editable.html(), $editable);
-      }
+    /**
+     * style from node
+     *
+     * @param {jQuery} $node
+     * @return {Object}
+     */
+    this.styleFromNode = function ($node) {
+      return style.fromNode($node);
     };
 
-    var triggerOnChange = this.triggerOnChange = function ($editable) {
-      var onChange = $editable.data('callbacks').onChange;
-      if (onChange) {
-        onChange($editable.html(), $editable);
-      }
+    var triggerOnBeforeChange = function ($editable) {
+      var $holder = dom.makeLayoutInfo($editable).holder();
+      handler.bindCustomEvent(
+        $holder, $editable.data('callbacks'), 'before.command'
+      )($editable.html(), $editable);
+    };
+
+    var triggerOnChange = function ($editable) {
+      var $holder = dom.makeLayoutInfo($editable).holder();
+      handler.bindCustomEvent(
+        $holder, $editable.data('callbacks'), 'change'
+      )($editable.html(), $editable);
     };
 
     /**
@@ -154,16 +173,21 @@ define([
      */
     var beforeCommand = this.beforeCommand = function ($editable) {
       triggerOnBeforeChange($editable);
+      // keep focus on editable before command execution
+      self.focus($editable);
     };
 
     /**
      * @method afterCommand
      * after command
      * @param {jQuery} $editable
+     * @param {Boolean} isPreventTrigger
      */
-    var afterCommand = this.afterCommand = function ($editable) {
+    var afterCommand = this.afterCommand = function ($editable, isPreventTrigger) {
       $editable.data('NoteHistory').recordUndo();
-      triggerOnChange($editable);
+      if (!isPreventTrigger) {
+        triggerOnChange($editable);
+      }
     };
 
     /**
@@ -264,8 +288,8 @@ define([
 
     /**
      * @method fontName
-     * 
-     * change fornt name 
+     *
+     * change font name
      *
      * @param {jQuery} $editable
      * @param {Mixed} value
@@ -276,7 +300,7 @@ define([
     var commands = ['bold', 'italic', 'underline', 'strikethrough', 'superscript', 'subscript',
                     'justifyLeft', 'justifyCenter', 'justifyRight', 'justifyFull',
                     'formatBlock', 'removeFormat',
-                    'backColor', 'foreColor', 'insertHorizontalRule', 'fontName'];
+                    'backColor', 'foreColor', 'fontName'];
 
     for (var idx = 0, len = commands.length; idx < len; idx ++) {
       this[commands[idx]] = (function (sCmd) {
@@ -285,7 +309,7 @@ define([
 
           document.execCommand(sCmd, false, value);
 
-          afterCommand($editable);
+          afterCommand($editable, true);
         };
       })(commands[idx]);
     }
@@ -300,7 +324,7 @@ define([
      * @param {Object} options
      */
     this.tab = function ($editable, options) {
-      var rng = range.create();
+      var rng = this.createRange($editable);
       if (rng.isCollapsed() && rng.isOnCell()) {
         table.tab(rng);
       } else {
@@ -316,8 +340,8 @@ define([
      * handle shift+tab key
      *
      */
-    this.untab = function () {
-      var rng = range.create();
+    this.untab = function ($editable) {
+      var rng = this.createRange($editable);
       if (rng.isCollapsed() && rng.isOnCell()) {
         table.tab(rng, true);
       }
@@ -388,13 +412,13 @@ define([
           width: Math.min($editable.width(), $image.width())
         });
         range.create().insertNode($image[0]);
-        range.createFromNode($image[0]).collapse().select();
+        range.createFromNodeAfter($image[0]).select();
         afterCommand($editable);
       }).fail(function () {
-        var callbacks = $editable.data('callbacks');
-        if (callbacks.onImageUploadError) {
-          callbacks.onImageUploadError();
-        }
+        var $holder = dom.makeLayoutInfo($editable).holder();
+        handler.bindCustomEvent(
+          $holder, $editable.data('callbacks'), 'image.upload.error'
+        )();
       });
     };
 
@@ -406,9 +430,8 @@ define([
      */
     this.insertNode = function ($editable, node) {
       beforeCommand($editable);
-      var rng = this.createRange($editable);
-      rng.insertNode(node);
-      range.createFromNode(node).collapse().select();
+      range.create().insertNode(node);
+      range.createFromNodeAfter(node).select();
       afterCommand($editable);
     };
 
@@ -419,9 +442,20 @@ define([
      */
     this.insertText = function ($editable, text) {
       beforeCommand($editable);
-      var rng = this.createRange($editable);
-      var textNode = rng.insertNode(dom.createText(text));
+      var textNode = range.create().insertNode(dom.createText(text));
       range.create(textNode, dom.nodeLength(textNode)).select();
+      afterCommand($editable);
+    };
+
+    /**
+     * paste HTML
+     * @param {Node} $editable
+     * @param {String} markup
+     */
+    this.pasteHTML = function ($editable, markup) {
+      beforeCommand($editable);
+      var contents = range.create().pasteHTML(markup);
+      range.createFromNodeAfter(list.last(contents)).select();
       afterCommand($editable);
     };
 
@@ -433,6 +467,7 @@ define([
      */
     this.formatBlock = function ($editable, tagName) {
       beforeCommand($editable);
+      // [workaround] for MSIE, IE need `<`
       tagName = agent.isMSIE ? '<' + tagName + '>' : tagName;
       document.execCommand('FormatBlock', false, tagName);
       afterCommand($editable);
@@ -455,23 +490,75 @@ define([
     /* jshint ignore:end */
 
     /**
-     * fontsize
+     * fontSize
      *
      * @param {jQuery} $editable
      * @param {String} value - px
      */
     this.fontSize = function ($editable, value) {
-      beforeCommand($editable);
+      var rng = range.create();
 
-      var rng = this.createRange($editable);
-      var spans = style.styleNodes(rng);
-      $.each(spans, function (idx, span) {
-        $(span).css({
+      if (rng.isCollapsed()) {
+        var spans = style.styleNodes(rng);
+        var firstSpan = list.head(spans);
+
+        $(spans).css({
           'font-size': value + 'px'
         });
-      });
+
+        // [workaround] added styled bogus span for style
+        //  - also bogus character needed for cursor position
+        if (firstSpan && !dom.nodeLength(firstSpan)) {
+          firstSpan.innerHTML = dom.ZERO_WIDTH_NBSP_CHAR;
+          range.createFromNodeAfter(firstSpan.firstChild).select();
+          $editable.data(KEY_BOGUS, firstSpan);
+        }
+      } else {
+        beforeCommand($editable);
+        $(style.styleNodes(rng)).css({
+          'font-size': value + 'px'
+        });
+        afterCommand($editable);
+      }
+    };
+
+    /**
+     * insert horizontal rule
+     * @param {jQuery} $editable
+     */
+    this.insertHorizontalRule = function ($editable) {
+      beforeCommand($editable);
+
+      var rng = range.create();
+      var hrNode = rng.insertNode($('<HR/>')[0]);
+      if (hrNode.nextSibling) {
+        range.create(hrNode.nextSibling, 0).normalize().select();
+      }
 
       afterCommand($editable);
+    };
+
+    /**
+     * remove bogus node and character
+     */
+    this.removeBogus = function ($editable) {
+      var bogusNode = $editable.data(KEY_BOGUS);
+      if (!bogusNode) {
+        return;
+      }
+
+      var textNode = list.find(list.from(bogusNode.childNodes), dom.isText);
+
+      var bogusCharIdx = textNode.nodeValue.indexOf(dom.ZERO_WIDTH_NBSP_CHAR);
+      if (bogusCharIdx !== -1) {
+        textNode.deleteData(bogusCharIdx, 1);
+      }
+
+      if (dom.isEmpty(bogusNode)) {
+        dom.remove(bogusNode);
+      }
+
+      $editable.removeData(KEY_BOGUS);
     };
 
     /**
@@ -495,7 +582,7 @@ define([
      * @param {jQuery} $editable
      */
     this.unlink = function ($editable) {
-      var rng = range.create();
+      var rng = this.createRange($editable);
       if (rng.isOnAnchor()) {
         var anchor = dom.ancestor(rng.sc, dom.isAnchor);
         rng = range.createFromNode(anchor);
@@ -517,9 +604,11 @@ define([
     this.createLink = function ($editable, linkInfo, options) {
       var linkUrl = linkInfo.url;
       var linkText = linkInfo.text;
-      var isNewWindow = linkInfo.newWindow;
-      var rng = linkInfo.range;
+      var isNewWindow = linkInfo.isNewWindow;
+      var rng = linkInfo.range || this.createRange($editable);
       var isTextChanged = rng.toString() !== linkText;
+
+      options = options || dom.makeLayoutInfo($editable).editor().data('options');
 
       beforeCommand($editable);
 
@@ -527,11 +616,11 @@ define([
         linkUrl = options.onCreateLink(linkUrl);
       }
 
-      var anchors;
+      var anchors = [];
       if (isTextChanged) {
         // Create a new link when text changed.
         var anchor = rng.insertNode($('<A>' + linkText + '</A>')[0]);
-        anchors = [anchor];
+        anchors.push(anchor);
       } else {
         anchors = style.styleNodes(rng, {
           nodeName: 'A',
@@ -541,15 +630,17 @@ define([
       }
 
       $.each(anchors, function (idx, anchor) {
-        $(anchor).attr({
-          href: linkUrl,
-          target: isNewWindow ? '_blank' : ''
-        });
+        $(anchor).attr('href', linkUrl);
+        if (isNewWindow) {
+          $(anchor).attr('target', '_blank');
+        } else {
+          $(anchor).removeAttr('target');
+        }
       });
 
-      var startRange = range.createFromNode(list.head(anchors)).collapse(true);
+      var startRange = range.createFromNodeBefore(list.head(anchors));
       var startPoint = startRange.getStartPoint();
-      var endRange = range.createFromNode(list.last(anchors)).collapse();
+      var endRange = range.createFromNodeAfter(list.last(anchors));
       var endPoint = endRange.getEndPoint();
 
       range.create(
@@ -572,7 +663,7 @@ define([
      * @return {String} [return.url=""]
      */
     this.getLinkInfo = function ($editable) {
-      $editable.focus();
+      this.focus($editable);
 
       var rng = range.create().expand(dom.isAnchor);
 
@@ -582,7 +673,7 @@ define([
       return {
         range: rng,
         text: rng.toString(),
-        isNewWindow: $anchor.length ? $anchor.attr('target') === '_blank' : true,
+        isNewWindow: $anchor.length ? $anchor.attr('target') === '_blank' : false,
         url: $anchor.length ? $anchor.attr('href') : ''
       };
     };
@@ -617,8 +708,7 @@ define([
       var dimension = sDim.split('x');
       beforeCommand($editable);
 
-      var rng = range.create();
-      rng = rng.deleteContents();
+      var rng = range.create().deleteContents();
       rng.insertNode(table.createTable(dimension[0], dimension[1]));
       afterCommand($editable);
     };
@@ -632,6 +722,13 @@ define([
      */
     this.floatMe = function ($editable, value, $target) {
       beforeCommand($editable);
+      // bootstrap
+      $target.removeClass('pull-left pull-right');
+      if (value && value !== 'none') {
+        $target.addClass('pull-' + value);
+      }
+
+      // fallback for non-bootstrap
       $target.css('float', value);
       afterCommand($editable);
     };
@@ -707,10 +804,9 @@ define([
       beforeCommand($editable);
       $target.detach();
 
-      var callbacks = $editable.data('callbacks');
-      if (callbacks && callbacks.onMediaDelete) {
-        callbacks.onMediaDelete($target, this, $editable);
-      }
+      handler.bindCustomEvent(
+        $(), $editable.data('callbacks'), 'media.delete'
+      )($target, $editable);
 
       afterCommand($editable);
     };
@@ -722,6 +818,29 @@ define([
      */
     this.focus = function ($editable) {
       $editable.focus();
+
+      // [workaround] for firefox bug http://goo.gl/lVfAaI
+      if (agent.isFF) {
+        var rng = range.create();
+        if (!rng || rng.isOnEditable()) {
+          return;
+        }
+
+        range.createFromNode($editable[0])
+             .normalize()
+             .collapse()
+             .select();
+      }
+    };
+
+    /**
+     * returns whether contents is empty or not.
+     *
+     * @param {jQuery} $editable
+     * @return {Boolean}
+     */
+    this.isEmpty = function ($editable) {
+      return dom.isEmpty($editable[0]) || dom.emptyPara === $editable.html();
     };
   };
 

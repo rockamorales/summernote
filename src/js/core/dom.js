@@ -68,6 +68,7 @@ define([
 
         return {
           editor: function () { return $editor; },
+          holder : function () { return $editor.data('holder'); },
           editable: function () { return $editor; },
           popover: makeFinder('#note-popover-'),
           handle: makeFinder('#note-handle-'),
@@ -76,11 +77,17 @@ define([
 
         // frame mode
       } else {
-        makeFinder = function (sClassName) {
-          return function () { return $editor.find(sClassName); };
+        makeFinder = function (className, $base) {
+          $base = $base || $editor;
+          return function () { return $base.find(className); };
         };
+
+        var options = $editor.data('options');
+        var $dialogHolder = (options && options.dialogsInBody) ? $(document.body) : null;
+
         return {
           editor: function () { return $editor; },
+          holder : function () { return $editor.data('holder'); },
           dropzone: makeFinder('.note-dropzone'),
           toolbar: makeFinder('.note-toolbar'),
           editable: makeFinder('.note-editable'),
@@ -88,7 +95,7 @@ define([
           statusbar: makeFinder('.note-statusbar'),
           popover: makeFinder('.note-popover'),
           handle: makeFinder('.note-handle'),
-          dialog: makeFinder('.note-dialog')
+          dialog: makeFinder('.note-dialog', $dialogHolder)
         };
       }
     };
@@ -149,7 +156,7 @@ define([
      * @see http://www.w3.org/html/wg/drafts/html/master/syntax.html#void-elements
      */
     var isVoid = function (node) {
-      return node && /^BR|^IMG|^HR/.test(node.nodeName.toUpperCase());
+      return node && /^BR|^IMG|^HR|^IFRAME|^BUTTON/.test(node.nodeName.toUpperCase());
     };
 
     var isPara = function (node) {
@@ -172,6 +179,7 @@ define([
     var isInline = function (node) {
       return !isBodyContainer(node) &&
              !isList(node) &&
+             !isHr(node) &&
              !isPara(node) &&
              !isTable(node) &&
              !isBlockquote(node);
@@ -180,6 +188,8 @@ define([
     var isList = function (node) {
       return node && /^UL|^OL/.test(node.nodeName.toUpperCase());
     };
+
+    var isHr = makePredByNodeName('HR');
 
     var isCell = function (node) {
       return node && /^TD|^TH/.test(node.nodeName.toUpperCase());
@@ -238,8 +248,10 @@ define([
 
     /**
      * blank HTML for cursor position
+     * - [workaround] old IE only works with &nbsp;
+     * - [workaround] IE11 and other browser works with bogus br
      */
-    var blankHTML = agent.isMSIE ? '&nbsp;' : '<br>';
+    var blankHTML = agent.isMSIE && agent.browserVersion < 11 ? '&nbsp;' : '<br>';
 
     /**
      * @method nodeLength
@@ -267,8 +279,11 @@ define([
 
       if (len === 0) {
         return true;
-      } else if (!dom.isText(node) && len === 1 && node.innerHTML === blankHTML) {
+      } else if (!isText(node) && len === 1 && node.innerHTML === blankHTML) {
         // ex) <p><br></p>, <span><br></span>
+        return true;
+      } else if (list.all(node.childNodes, isText) && node.innerHTML === '') {
+        // ex) <p></p>, <span></span>
         return true;
       }
 
@@ -533,6 +548,26 @@ define([
     };
 
     /**
+     * returns whether point is left edge of ancestor or not.
+     * @param {BoundaryPoint} point
+     * @param {Node} ancestor
+     * @return {Boolean}
+     */
+    var isLeftEdgePointOf = function (point, ancestor) {
+      return isLeftEdgePoint(point) && isLeftEdgeOf(point.node, ancestor);
+    };
+
+    /**
+     * returns whether point is right edge of ancestor or not.
+     * @param {BoundaryPoint} point
+     * @param {Node} ancestor
+     * @return {Boolean}
+     */
+    var isRightEdgePointOf = function (point, ancestor) {
+      return isRightEdgePoint(point) && isRightEdgeOf(point.node, ancestor);
+    };
+
+    /**
      * returns offset from parent.
      *
      * @param {Node} node
@@ -681,6 +716,21 @@ define([
     };
 
     /**
+     * returns whether point has character or not.
+     *
+     * @param {Point} point
+     * @return {Boolean}
+     */
+    var isCharPoint = function (point) {
+      if (!isText(point.node)) {
+        return false;
+      }
+
+      var ch = point.node.nodeValue.charAt(point.offset - 1);
+      return ch && (ch !== ' ' && ch !== NBSP_CHAR);
+    };
+
+    /**
      * @method walkPoint
      *
      * @param {BoundaryPoint} startPoint
@@ -715,7 +765,7 @@ define([
      */
     var makeOffsetPath = function (ancestor, node) {
       var ancestors = listAncestor(node, func.eq(ancestor));
-      return $.map(ancestors, position).reverse();
+      return ancestors.map(position).reverse();
     };
 
     /**
@@ -744,33 +794,39 @@ define([
      * split element or #text
      *
      * @param {BoundaryPoint} point
-     * @param {Boolean} [isSkipPaddingBlankHTML]
+     * @param {Object} [options]
+     * @param {Boolean} [options.isSkipPaddingBlankHTML] - default: false
+     * @param {Boolean} [options.isNotSplitEdgePoint] - default: false
      * @return {Node} right node of boundaryPoint
      */
-    var splitNode = function (point, isSkipPaddingBlankHTML) {
-      // split #text
-      if (isText(point.node)) {
-        // edge case
+    var splitNode = function (point, options) {
+      var isSkipPaddingBlankHTML = options && options.isSkipPaddingBlankHTML;
+      var isNotSplitEdgePoint = options && options.isNotSplitEdgePoint;
+
+      // edge case
+      if (isEdgePoint(point) && (isText(point.node) || isNotSplitEdgePoint)) {
         if (isLeftEdgePoint(point)) {
           return point.node;
         } else if (isRightEdgePoint(point)) {
           return point.node.nextSibling;
         }
+      }
 
+      // split #text
+      if (isText(point.node)) {
         return point.node.splitText(point.offset);
+      } else {
+        var childNode = point.node.childNodes[point.offset];
+        var clone = insertAfter(point.node.cloneNode(false), point.node);
+        appendChildNodes(clone, listNext(childNode));
+
+        if (!isSkipPaddingBlankHTML) {
+          paddingBlankHTML(point.node);
+          paddingBlankHTML(clone);
+        }
+
+        return clone;
       }
-
-      // split element
-      var childNode = point.node.childNodes[point.offset];
-      var clone = insertAfter(point.node.cloneNode(false), point.node);
-      appendChildNodes(clone, listNext(childNode));
-
-      if (!isSkipPaddingBlankHTML) {
-        paddingBlankHTML(point.node);
-        paddingBlankHTML(clone);
-      }
-
-      return clone;
     };
 
     /**
@@ -780,33 +836,30 @@ define([
      *
      * @param {Node} root - split root
      * @param {BoundaryPoint} point
-     * @param {Boolean} [isSkipPaddingBlankHTML]
+     * @param {Object} [options]
+     * @param {Boolean} [options.isSkipPaddingBlankHTML] - default: false
+     * @param {Boolean} [options.isNotSplitEdgePoint] - default: false
      * @return {Node} right node of boundaryPoint
      */
-    var splitTree = function (root, point, isSkipPaddingBlankHTML) {
+    var splitTree = function (root, point, options) {
       // ex) [#text, <span>, <p>]
       var ancestors = listAncestor(point.node, func.eq(root));
 
       if (!ancestors.length) {
         return null;
       } else if (ancestors.length === 1) {
-        return splitNode(point, isSkipPaddingBlankHTML);
+        return splitNode(point, options);
       }
 
       return ancestors.reduce(function (node, parent) {
-        var clone = insertAfter(parent.cloneNode(false), parent);
-
         if (node === point.node) {
-          node = splitNode(point, isSkipPaddingBlankHTML);
+          node = splitNode(point, options);
         }
 
-        appendChildNodes(clone, listNext(node));
-
-        if (!isSkipPaddingBlankHTML) {
-          paddingBlankHTML(parent);
-          paddingBlankHTML(clone);
-        }
-        return clone;
+        return splitNode({
+          node: parent,
+          offset: node ? dom.position(node) : nodeLength(parent)
+        }, options);
       });
     };
 
@@ -834,8 +887,16 @@ define([
         container = splitRoot.parentNode;
       }
 
-      // split with splitTree
-      var pivot = splitRoot && splitTree(splitRoot, point, isInline);
+      // if splitRoot is exists, split with splitTree
+      var pivot = splitRoot && splitTree(splitRoot, point, {
+        isSkipPaddingBlankHTML: isInline,
+        isNotSplitEdgePoint: isInline
+      });
+
+      // if container is point.node, find pivot with point.offset
+      if (!pivot && container === point.node) {
+        pivot = point.node.childNodes[point.offset];
+      }
 
       return {
         rightNode: pivot,
@@ -927,6 +988,18 @@ define([
     var isTextarea = makePredByNodeName('TEXTAREA');
 
     /**
+     * @param {jQuery} $node
+     * @param {Boolean} [stripLinebreaks] - default: false
+     */
+    var value = function ($node, stripLinebreaks) {
+      var val = isTextarea($node[0]) ? $node.val() : $node.html();
+      if (stripLinebreaks) {
+        return val.replace(/[\n\r]/g, '');
+      }
+      return val;
+    };
+
+    /**
      * @method html
      *
      * get the HTML contents of node
@@ -935,7 +1008,7 @@ define([
      * @param {Boolean} [isNewlineOnBlock]
      */
     var html = function ($node, isNewlineOnBlock) {
-      var markup = isTextarea($node[0]) ? $node.val() : $node.html();
+      var markup = value($node);
 
       if (isNewlineOnBlock) {
         var regexTag = /<(\/?)(\b(?!!)[^>\s]*)(.*?)(\s*\/?>)/g;
@@ -951,14 +1024,6 @@ define([
       }
 
       return markup;
-    };
-
-    var value = function ($textarea, stripLinebreaks) {
-      var val = $textarea.val();
-      if (stripLinebreaks) {
-        return val.replace(/[\n\r]/g, '');
-      }
-      return val;
     };
 
     return {
@@ -980,6 +1045,7 @@ define([
       isPara: isPara,
       isPurePara: isPurePara,
       isInline: isInline,
+      isBlock: func.not(isInline),
       isBodyInline: isBodyInline,
       isBody: isBody,
       isParaInline: isParaInline,
@@ -1009,12 +1075,15 @@ define([
       isEdgePoint: isEdgePoint,
       isLeftEdgeOf: isLeftEdgeOf,
       isRightEdgeOf: isRightEdgeOf,
+      isLeftEdgePointOf: isLeftEdgePointOf,
+      isRightEdgePointOf: isRightEdgePointOf,
       prevPoint: prevPoint,
       nextPoint: nextPoint,
       isSamePoint: isSamePoint,
       isVisiblePoint: isVisiblePoint,
       prevPointUntil: prevPointUntil,
       nextPointUntil: nextPointUntil,
+      isCharPoint: isCharPoint,
       walkPoint: walkPoint,
       ancestor: ancestor,
       singleChildAncestor: singleChildAncestor,

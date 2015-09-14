@@ -14,6 +14,7 @@ define([
     /**
      * @method jQueryCSS
      *
+     * [workaround] for old jQuery
      * passing an array of style properties to .css()
      * will result in an object of property-value pairs.
      * (compability with version < 1.9)
@@ -32,6 +33,19 @@ define([
         return result;
       }
       return $obj.css.call($obj, propertyNames);
+    };
+
+    /**
+     * returns style object from node
+     *
+     * @param {jQuery} $node
+     * @return {Object}
+     */
+    this.fromNode = function ($node) {
+      var properties = ['font-family', 'font-size', 'text-align', 'list-style-type', 'line-height'];
+      var styleInfo = jQueryCSS($node, properties) || {};
+      styleInfo['font-size'] = parseInt(styleInfo['font-size'], 10);
+      return styleInfo;
     };
 
     /**
@@ -66,13 +80,13 @@ define([
       var onlyPartialContains = !!(options && options.onlyPartialContains);
 
       if (rng.isCollapsed()) {
-        return rng.insertNode(dom.create(nodeName));
+        return [rng.insertNode(dom.create(nodeName))];
       }
 
       var pred = dom.makePredByNodeName(nodeName);
-      var nodes = $.map(rng.nodes(dom.isText, {
+      var nodes = rng.nodes(dom.isText, {
         fullyContains: true
-      }), function (text) {
+      }).map(function (text) {
         return dom.singleChildAncestor(text, pred) || dom.wrap(text, nodeName);
       });
 
@@ -85,7 +99,7 @@ define([
           });
         }
 
-        return $.map(nodes, function (node) {
+        return nodes.map(function (node) {
           var siblings = dom.withClosestSiblings(node, pred);
           var head = list.head(siblings);
           var tails = list.tail(siblings);
@@ -104,15 +118,11 @@ define([
      * get current style on cursor
      *
      * @param {WrappedRange} rng
-     * @param {Node} target - target element on event
      * @return {Object} - object contains style properties.
      */
-    this.current = function (rng, target) {
+    this.current = function (rng) {
       var $cont = $(dom.isText(rng.sc) ? rng.sc.parentNode : rng.sc);
-      var properties = ['font-family', 'font-size', 'text-align', 'list-style-type', 'line-height'];
-      var styleInfo = jQueryCSS($cont, properties) || {};
-
-      styleInfo['font-size'] = parseInt(styleInfo['font-size'], 10);
+      var styleInfo = this.fromNode($cont);
 
       // document.queryCommandState for toggle state
       styleInfo['font-bold'] = document.queryCommandState('bold') ? 'bold' : 'normal';
@@ -139,7 +149,6 @@ define([
         styleInfo['line-height'] = lineHeight.toFixed(1);
       }
 
-      styleInfo.image = dom.isImg(target) && target;
       styleInfo.anchor = rng.isOnAnchor() && dom.ancestor(rng.sc, dom.isAnchor);
       styleInfo.ancestors = dom.listAncestor(rng.sc, dom.isEditable);
       styleInfo.range = rng;

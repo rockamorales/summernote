@@ -40,7 +40,7 @@
     var dmRegExp = /.+dailymotion.com\/(video|hub)\/([^_]+)[^#]*(#video=([^_&]+))?/;
     var dmMatch = url.match(dmRegExp);
 
-    var youkuRegExp = /\/\/v\.youku\.com\/v_show\/id_(\w+)\.html/;
+    var youkuRegExp = /\/\/v\.youku\.com\/v_show\/id_(\w+)=*\.html/;
     var youkuMatch = url.match(youkuRegExp);
 
     var mp4RegExp = /^.+.(mp4|m4v)$/;
@@ -94,6 +94,7 @@
         .attr('width', '640').attr('height', '360');
     } else {
       // this is not a known video link. Now what, Cat? Now what?
+      return false;
     }
 
     return $video[0];
@@ -203,8 +204,8 @@
      * @property {function(object): string} buttons.video
      */
     buttons: {
-      video: function (lang) {
-        return tmpl.iconButton('fa fa-youtube-play', {
+      video: function (lang, options) {
+        return tmpl.iconButton(options.iconPrefix + 'youtube-play', {
           event: 'showVideoDialog',
           title: lang.video.video,
           hide: true
@@ -244,9 +245,14 @@
 
           // restore range
           editor.restoreRange($editable);
-
-          // insert video node
-          editor.insertNode($editable, createVideoNode(url));
+          
+          // build node
+          var $node = createVideoNode(url);
+          
+          if ($node) {
+            // insert video node
+            editor.insertNode($editable, $node);
+          }
         }).fail(function () {
           // when cancel button clicked
           editor.restoreRange($editable);

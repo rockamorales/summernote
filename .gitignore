@@ -11,3 +11,9 @@ bower_components
 
 # zip file
 *.zip
+
+.versions
+coverage/
+
+.idea/
+*.iml

@@ -183,6 +183,8 @@ define([
         } else {
           nativeRng.select();
         }
+        
+        return this;
       };
 
       /**
@@ -192,21 +194,37 @@ define([
 
         /**
          * @param {BoundaryPoint} point
+         * @param {Boolean} isLeftToRight
          * @return {BoundaryPoint}
          */
-        var getVisiblePoint = function (point) {
-          if (!dom.isVisiblePoint(point)) {
-            if (dom.isLeftEdgePoint(point)) {
-              point = dom.nextPointUntil(point, dom.isVisiblePoint);
-            } else {
-              point = dom.prevPointUntil(point, dom.isVisiblePoint);
-            }
+        var getVisiblePoint = function (point, isLeftToRight) {
+          if ((dom.isVisiblePoint(point) && !dom.isEdgePoint(point)) ||
+              (dom.isVisiblePoint(point) && dom.isRightEdgePoint(point) && !isLeftToRight) ||
+              (dom.isVisiblePoint(point) && dom.isLeftEdgePoint(point) && isLeftToRight) ||
+              (dom.isVisiblePoint(point) && dom.isBlock(point.node) && dom.isEmpty(point.node))) {
+            return point;
           }
-          return point;
+
+          // point on block's edge
+          var block = dom.ancestor(point.node, dom.isBlock);
+          if (((dom.isLeftEdgePointOf(point, block) || dom.isVoid(dom.prevPoint(point).node)) && !isLeftToRight) ||
+              ((dom.isRightEdgePointOf(point, block) || dom.isVoid(dom.nextPoint(point).node)) && isLeftToRight)) {
+
+            // returns point already on visible point
+            if (dom.isVisiblePoint(point)) {
+              return point;
+            }
+            // reverse direction 
+            isLeftToRight = !isLeftToRight;
+          }
+
+          var nextPoint = isLeftToRight ? dom.nextPointUntil(dom.nextPoint(point), dom.isVisiblePoint) :
+                                          dom.prevPointUntil(dom.prevPoint(point), dom.isVisiblePoint);
+          return nextPoint || point;
         };
 
-        var startPoint = getVisiblePoint(this.getStartPoint());
-        var endPoint = getVisiblePoint(this.getEndPoint());
+        var endPoint = getVisiblePoint(this.getEndPoint(), false);
+        var startPoint = this.isCollapsed() ? endPoint : getVisiblePoint(this.getStartPoint(), true);
 
         return new WrappedRange(
           startPoint.node,
@@ -440,20 +458,26 @@ define([
           return new WrappedRange(sc.firstChild, 0, sc.firstChild, 0);
         }
 
+        /**
+         * [workaround] firefox often create range on not visible point. so normalize here.
+         *  - firefox: |<p>text</p>|
+         *  - chrome: <p>|text|</p>
+         */
+        var rng = this.normalize();
         if (dom.isParaInline(sc) || dom.isPara(sc)) {
-          return this.normalize();
+          return rng;
         }
 
         // find inline top ancestor
         var topAncestor;
-        if (dom.isInline(sc)) {
-          var ancestors = dom.listAncestor(sc, func.not(dom.isInline));
+        if (dom.isInline(rng.sc)) {
+          var ancestors = dom.listAncestor(rng.sc, func.not(dom.isInline));
           topAncestor = list.last(ancestors);
           if (!dom.isInline(topAncestor)) {
-            topAncestor = ancestors[ancestors.length - 2] || sc.childNodes[so];
+            topAncestor = ancestors[ancestors.length - 2] || rng.sc.childNodes[rng.so];
           }
         } else {
-          topAncestor = sc.childNodes[so > 0 ? so - 1 : 0];
+          topAncestor = rng.sc.childNodes[rng.so > 0 ? rng.so - 1 : 0];
         }
 
         // siblings not in paragraph
@@ -487,6 +511,20 @@ define([
 
         return node;
       };
+
+      /**
+       * insert html at current cursor
+       */
+      this.pasteHTML = function (markup) {
+        var contentsContainer = $('<div></div>').html(markup)[0];
+        var childNodes = list.from(contentsContainer.childNodes);
+
+        var rng = this.wrapBodyInlineWithPara().deleteContents();
+
+        return childNodes.reverse().map(function (childNode) {
+          return rng.insertNode(childNode);
+        }).reverse();
+      };
   
       /**
        * returns text in range
@@ -496,6 +534,37 @@ define([
       this.toString = function () {
         var nativeRng = nativeRange();
         return agent.isW3CRangeSupport ? nativeRng.toString() : nativeRng.text;
+      };
+
+      /**
+       * returns range for word before cursor
+       *
+       * @param {Boolean} [findAfter] - find after cursor, default: false
+       * @return {WrappedRange}
+       */
+      this.getWordRange = function (findAfter) {
+        var endPoint = this.getEndPoint();
+
+        if (!dom.isCharPoint(endPoint)) {
+          return this;
+        }
+
+        var startPoint = dom.prevPointUntil(endPoint, function (point) {
+          return !dom.isCharPoint(point);
+        });
+
+        if (findAfter) {
+          endPoint = dom.nextPointUntil(endPoint, function (point) {
+            return !dom.isCharPoint(point);
+          });
+        }
+
+        return new WrappedRange(
+          startPoint.node,
+          startPoint.offset,
+          endPoint.node,
+          endPoint.offset
+        );
       };
   
       /**
@@ -572,7 +641,7 @@ define([
         if (!arguments.length) { // from Browser Selection
           if (agent.isW3CRangeSupport) {
             var selection = document.getSelection();
-            if (selection.rangeCount === 0) {
+            if (!selection || selection.rangeCount === 0) {
               return null;
             } else if (dom.isBody(selection.anchorNode)) {
               // Firefox: returns entire body as range on initialization. We won't never need it.
@@ -641,6 +710,26 @@ define([
         }
 
         return this.create(sc, so, ec, eo);
+      },
+
+      /**
+       * create WrappedRange from node after position
+       *
+       * @param {Node} node
+       * @return {WrappedRange}
+       */
+      createFromNodeBefore: function (node) {
+        return this.createFromNode(node).collapse(true);
+      },
+
+      /**
+       * create WrappedRange from node after position
+       *
+       * @param {Node} node
+       * @return {WrappedRange}
+       */
+      createFromNodeAfter: function (node) {
+        return this.createFromNode(node).collapse();
       },
 
       /**

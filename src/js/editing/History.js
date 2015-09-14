@@ -11,7 +11,7 @@ define(['summernote/core/range'], function (range) {
 
     var makeSnapshot = function () {
       var rng = range.create();
-      var emptyBookmark = {s: {path: [0], offset: 0}, e: {path: [0], offset: 0}};
+      var emptyBookmark = {s: {path: [], offset: 0}, e: {path: [], offset: 0}};
 
       return {
         contents: $editable.html(),
@@ -32,6 +32,11 @@ define(['summernote/core/range'], function (range) {
      * undo
      */
     this.undo = function () {
+      // Create snap shot if not yet recorded
+      if ($editable.html() !== stack[stackOffset].contents) {
+        this.recordUndo();
+      }
+
       if (0 < stackOffset) {
         stackOffset--;
         applySnapshot(stack[stackOffset]);
